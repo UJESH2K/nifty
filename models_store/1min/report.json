@@ -1,0 +1,25 @@
+{
+  "resolution": "1min",
+  "rows": 93304,
+  "days": 250,
+  "trained_at": "2026-11-20T02:50:23.582970+05:30",
+  "holdout_days": 0,
+  "models": {
+    "naive_price": {
+      "cv": null,
+      "seconds": 0.2
+    },
+    "naive_news": {
+      "cv": null,
+      "seconds": 0.2
+    },
+    "ridge_price": {
+      "cv": null,
+      "seconds": 2.0
+    },
+    "ridge_news": {
+      "cv": null,
+      "seconds": 1.5
+    }
+  }
+}

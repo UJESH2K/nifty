@@ -1,0 +1,14 @@
+[Unit]
+Description=NiftySim autopilot
+After=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/niftysim
+EnvironmentFile=/home/ubuntu/niftysim/.env
+ExecStart=/home/ubuntu/niftysim/.venv/bin/python scripts/run_dashboard.py --autopilot auto --host 127.0.0.1 --no-browser
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

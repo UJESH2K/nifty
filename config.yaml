@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------
+# NiftySim configuration — edit this file, not the code.
+# ---------------------------------------------------------------
+
+market:
+  symbol: "NIFTY 50"
+  tz: "Asia/Kolkata"
+  open: "09:15"
+  close: "15:30"
+  # NSE equity trading holidays (weekdays). Source: NSE circular as listed by Upstox, Nov 2026.
+  # Add next year's list when NSE publishes it (usually in December).
+  holidays: ["2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03", "2026-04-14",
+             "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14", "2026-10-02", "2026-10-20",
+             "2026-11-10", "2026-11-24", "2026-12-25"]
+  special_sessions: []            # e.g. ["2027-02-01"] if a Sunday budget session is announced
+  weekly_expiry_weekday: 1        # 0=Mon ... 1=Tue (NIFTY weekly expiry) — verify against NSE circulars
+
+# Bar resolution the models work on: "1min" (default) or "1s".
+# 1s history is NOT available for free anywhere — you build it yourself by
+# running scripts/record_ticks.py every market day (it stores raw ticks + 1s + 1m bars).
+resolution: "1min"
+
+# Forecast horizons, in bars of the chosen resolution.
+horizons:
+  "1min": [1, 5, 10, 15, 30, 45, 60, 90, 120, 180]   # minutes ahead (anything in between is interpolated)
+  "1s":   [10, 30, 60, 300]       # 10s, 30s, 1m, 5m ahead
+
+quantiles: [0.1, 0.5, 0.9]
+
+paths:
+  data_dir: "data"
+  models_dir: "models_store"
+
+# Live feed: auto (NSE website, falls back to Yahoo; no account) | nse | yahoo | angel | upstox | synthetic | replay
+feed:
+  source: "auto"
+  yahoo_poll_seconds: 3
+  speed: 60                       # synthetic/replay only: simulated seconds per real second
+  replay_file: "data/bars_1min.parquet"
+
+upstox:                           # free: https://upstox.com/developer/api-documentation/
+  instrument_key: "NSE_INDEX|Nifty 50"
+  # access token is read from env var UPSTOX_ACCESS_TOKEN (see .env.example)
+
+angel:                            # free: https://smartapi.angelone.in/
+  exchange_type: 1                # 1 = NSE cash/index
+  token: "99926000"               # NIFTY 50 index token on SmartAPI
+  # credentials from env: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET
+
+news:
+  scorer: "lexicon"               # lexicon (offline, instant) | finbert (free, local model) | llm (Ollama/any OpenAI-compatible)
+  llm_base_url: "http://localhost:11434/v1"   # Ollama default — fully free and local
+  llm_model: "llama3.1:8b"
+  poll_seconds: 30
+  half_life_bars: 15              # how fast a headline's influence decays in the features
+  rss:
+    - "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
+    - "https://www.livemint.com/rss/markets"
+    - "https://www.business-standard.com/rss/markets-106.rss"
+    - "https://www.moneycontrol.com/rss/marketreports.xml"
+  gdelt_query: '(nifty OR sensex OR "reserve bank of india" OR rbi OR "indian stocks") sourcelang:english'
+  # optional keyed sources (free tiers); leave env vars empty to skip
+  # FINNHUB_API_KEY, MARKETAUX_API_KEY
+
+signals:
+  capture_horizon: 30             # minutes (bars) the capture / stand-aside rules look ahead
+  min_projection_atr: 2.0         # projected move must be >= 2 x ATR(14 bars) to count as a "big" call ...
+  max_adverse_ratio: 1.0          # ... and the pessimistic tail (p10 for longs) may not exceed the projected move
+  capture_fraction: 0.333         # we only aim to bank 1/3 of the projection (your 300 -> 100 rule);
+                                  # the scorecard tracks how often price really got there
+  stand_aside_width_pctile: 0.90  # band width above this percentile of recent widths = "stand aside"
+  stand_aside_cruciality: 8       # any fresh headline scored >= this = "stand aside"
+
+# Live 5-second layer + critical-moment alerts
+alerts:
+  refresh_seconds: 5              # recompute every forecast from the still-forming candle this often
+  fast_move_sigma: 3.5            # a 5-min move this many times the usual size = critical
+  range_jump_pctile: 0.97         # expected range wider than 97% of the last 300 minutes = critical
+  min_points: 15                  # ignore "big move" projections smaller than this many points
+  cooldown_minutes: 15            # at most one alert per 15 min
+  refit_on_alert: true            # re-tune the model immediately on each alert (last N days + today)
+  refit_days: 60
+
+online:
+  target_coverage: 0.80           # p10..p90 band should contain the outcome 80% of the time
+  gamma: 0.05                     # adaptive-conformal step size (how fast bands self-correct)
+  use_bias: false                 # drift correction; tested worse on long horizons (lagged feedback)
+  bias_halflife: 60               # EWMA half-life (in matured predictions) for drift correction

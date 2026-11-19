@@ -1,0 +1,17 @@
+# Render Blueprint: New > Blueprint > pick this repo. Free plan, Singapore (closest to India).
+services:
+  - type: web
+    name: niftysim
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: python scripts/run_dashboard.py --autopilot auto --host 0.0.0.0 --no-browser --history-days 3
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NIFTYSIM_MAX_TRAIN_DAYS     # retrain on the last 250 trading days (fits in 512 MB)
+        value: "250"
+      - key: NIFTYSIM_UI_REFRESH_MS      # the free CPU is small: redraw every 2 s (forecasts still every 5 s)
+        value: "2000"
