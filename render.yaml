@@ -6,7 +6,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -r requirements-render.txt
-    startCommand: python scripts/run_dashboard.py --autopilot auto --host 0.0.0.0 --no-browser --history-days 3
+    startCommand: python scripts/run_dashboard.py --autopilot auto --host 0.0.0.0 --no-browser --history-days 3 --train-if-needed
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION

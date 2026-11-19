@@ -29,6 +29,8 @@ ap.add_argument("--train-days", type=int, default=None, help="autopilot: retrain
 ap.add_argument("--host", default="127.0.0.1")
 ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8050)))
 ap.add_argument("--no-browser", action="store_true")
+ap.add_argument("--train-if-needed", action="store_true",
+                help="if the saved models are missing, unreadable or for other horizons, train them now (servers)")
 a = ap.parse_args()
 
 cfg = load_config()
@@ -36,11 +38,27 @@ if a.speed:
     cfg["feed"]["speed"] = a.speed
 res = a.res or cfg["resolution"]
 mp = models_dir(cfg) / res / f"{a.model}_price.joblib"
-if not mp.exists():
-    sys.exit(f"No trained '{a.model}' model yet. Run first:\n  python scripts/setup_real_data.py")
-if list(ForecastModel.load(mp).horizons) != horizons(cfg, res):
-    sys.exit("Your saved models were trained for different horizons than config.yaml. Retrain:\n"
-             "  python scripts/train_models.py --no-cv")
+
+
+def _models_ok():
+    try:
+        return all(list(ForecastModel.load(models_dir(cfg) / res / f"{a.model}_{v}.joblib").horizons) == horizons(cfg, res)
+                   for v in ("price", "news"))
+    except Exception as ex:
+        print(f"saved '{a.model}' models can't be used here ({type(ex).__name__}: {ex})")
+        return False
+
+
+if not _models_ok():
+    if a.train_if_needed:
+        from niftysim.train import train_all
+        print(f"training '{a.model}' on this machine first (under a minute)…")
+        train_all(cfg, res, sorted({"naive", a.model}), do_cv=False)
+    elif not mp.exists():
+        sys.exit(f"No trained '{a.model}' model yet. Run first:\n  python scripts/setup_real_data.py")
+    else:
+        sys.exit("Your saved models don't match this code or config. Retrain:\n"
+                 "  python scripts/train_models.py --no-cv --models naive ridge")
 eng = Engine(cfg, res, a.model, a.history_days)
 
 auto = None
