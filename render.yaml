@@ -15,3 +15,7 @@ services:
         value: "250"
       - key: NIFTYSIM_UI_REFRESH_MS      # the free CPU is small: redraw every 2 s (forecasts still every 5 s)
         value: "2000"
+      - key: NIFTYSIM_BLIND_TRAIN_DAYS   # blind replay trains on the 90 days before the chosen day
+        value: "90"
+      - key: MALLOC_ARENA_MAX            # fewer memory arenas: keeps the app well under 512 MB
+        value: "2"

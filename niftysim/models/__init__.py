@@ -11,6 +11,10 @@ import numpy as np
 import pandas as pd
 
 
+# Bump when the model maths changes, so servers retrain instead of loading stale pickles.
+CODE_VERSION = 3
+
+
 class ForecastModel:
     name = "base"
     description = ""
@@ -59,6 +63,7 @@ class ForecastModel:
         return out
 
     def save(self, path):
+        self.code_version = CODE_VERSION
         joblib.dump(self, path)
 
     @staticmethod
@@ -66,18 +71,38 @@ class ForecastModel:
         return joblib.load(path)
 
     # ---- helpers for mean models: heteroscedastic residual quantiles
+    # Time-of-day buckets (share of the session elapsed): the open is far jumpier than the afternoon,
+    # and recent volatility alone (often measured on yesterday's quiet close) misses that.
+    TOD_EDGES = np.array([0, 15, 30, 60, 120, 240, 376]) / 375.0
+
     def _scale(self, X, h):
         v = X["vol20"].fillna(X["vol20"].median() if X["vol20"].notna().any() else 5.0).clip(lower=0.5)
         return v.values * np.sqrt(h)
 
+    def _bucket(self, X):
+        f = X["bars_since_open"].fillna(0.5).clip(0, 1).values if "bars_since_open" in X else np.full(len(X), 0.5)
+        return np.clip(np.searchsorted(self.TOD_EDGES, f, side="right") - 1, 0, len(self.TOD_EDGES) - 2)
+
     def _fit_resid_q(self, X, y, mean, h):
         z = (y - mean) / self._scale(X, h)
         self._rq = getattr(self, "_rq", {})
-        self._rq[h] = np.nanquantile(z, self.quantiles)
+        self._rqb = getattr(self, "_rqb", {})
+        mid = self.quantiles.index(0.5) if 0.5 in self.quantiles else None
+
+        def qz(zz):
+            q = np.nanquantile(zz, self.quantiles)
+            return q - q[mid] if mid is not None else q   # centred: the middle line is the model's own call
+        self._rq[h] = qz(z)
+        b = self._bucket(X)
+        self._rqb[h] = {k: (qz(z[b == k]) if (b == k).sum() > 300 else self._rq[h]) for k in range(len(self.TOD_EDGES) - 1)}
 
     def _resid_pred(self, X, mean, h):
         s = self._scale(X, h)
-        return mean[:, None] + s[:, None] * self._rq[h][None, :]
+        rqb = getattr(self, "_rqb", {}).get(h)
+        if rqb is None:
+            return mean[:, None] + s[:, None] * self._rq[h][None, :]
+        Q = np.vstack([rqb[k] for k in self._bucket(X)])
+        return mean[:, None] + s[:, None] * Q
 
 
 class NaiveVol(ForecastModel):
@@ -90,9 +115,7 @@ class NaiveVol(ForecastModel):
         for h in self.horizons:
             y = Y[f"y{h}"].values
             m = ~np.isnan(y)
-            z = y[m] / self._scale(X[m], h)
-            self._rq[h] = np.nanquantile(z, self.quantiles)
-            self._rq[h][1] = 0.0
+            self._fit_resid_q(X[m], y[m], np.zeros(m.sum()), h)
 
     def _predict(self, X):
         return {h: self._resid_pred(X, np.zeros(len(X)), h) for h in self.horizons}
@@ -120,7 +143,8 @@ class RidgeQuant(ForecastModel):
         for h in self.horizons:
             y = Y[f"y{h}"].values
             ok = ~np.isnan(y)
-            self.m[h] = Ridge(alpha=50.0).fit(Z[ok], y[ok])
+            # de-meaned target: no built-in up (or down) lean from the period it was trained on
+            self.m[h] = Ridge(alpha=200.0, fit_intercept=False).fit(Z[ok], y[ok] - np.nanmean(y[ok]))
             self._fit_resid_q(X[ok], y[ok], self.m[h].predict(Z[ok]), h)
 
     def _predict(self, X):

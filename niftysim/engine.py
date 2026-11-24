@@ -64,10 +64,42 @@ class Engine:
         self._last_refresh_sim = None
         self.alerts: list[dict] = []
         self.fast: dict = {}            # intraday re-tuned models (used 50/50 with the main model)
+        self.live_X = None              # latest live feature row (for path-risk)
+        self.ex = None                  # ExcursionModel: typical rise / dip within h minutes
+        self.nextday = None             # NextDayModel: next session's open / close
+        self.next_fc = None
+        self._next_fc_at = 0.0
+        self.alarms: list[dict] = []    # stop / target levels the user armed
+        self.alarm_events: list[dict] = []
         self.refit_info = ""
         self._refitting = False
         self._load_history(history_days)
         self.set_model(model_name)
+        threading.Thread(target=self._fit_aux, daemon=True).start()
+
+    def _fit_aux(self):
+        """Fit the path-risk and next-session models from the full bar file (a few seconds)."""
+        try:
+            from .daily import NextDayModel
+            from .excursion import ExcursionModel
+            p = data_dir(self.cfg) / f"bars_{self.res}.parquet"
+            full = load_bars(p) if p.exists() else self.bars
+            if self.history_until is not None:
+                full = full[full.index < self.history_until]
+            days = full.index.normalize().unique()
+            # a blind replay only needs a shorter window, and memory on the free server is tight
+            n_ex = 250 if self.history_until is None else 60
+            recent = full[full.index >= days[-min(n_ex, len(days))]] if len(days) else full
+            if self.res == "1min":
+                self.nextday = NextDayModel().fit(full)
+            del full
+            X = price_features(recent, self.bs, self.cfg["market"]["weekly_expiry_weekday"])
+            self.ex = ExcursionModel().fit(X, recent)
+            del recent, X
+            import gc
+            gc.collect()
+        except Exception as ex:
+            self.message = f"path-risk model unavailable: {ex}"
 
     # ------------------------------------------------------------------ setup
     def _load_history(self, days):
@@ -106,6 +138,17 @@ class Engine:
                                                 self.cfg["online"]["bias_halflife"],
                                                 use_bias=self.cfg["online"].get("use_bias", False)) for h in self.H} for v in VARIANTS}
             self._predict_history()
+
+    def _tail(self):
+        """Recent bars for live features: at least 150, and always back to yesterday's last bars so the
+        overnight gap and day-open features are computed exactly as in training."""
+        n = len(self.bars)
+        if n == 0:
+            return self.bars
+        day = self.bars.index[-1].normalize()
+        first_today = int(np.searchsorted(self.bars.index.values, day.to_datetime64()))
+        start = max(0, min(n - 150, first_today - 70))
+        return self.bars.iloc[start:]
 
     def _predict(self, v, X):
         P = self.models[v].predict(X)
@@ -254,6 +297,8 @@ class Engine:
         with self.lock:
             self.last_price, self.last_ts = price, ts
             self.ticks.append((ts, price))
+            if self.alarms:
+                self._check_alarms(ts, price)
             if self.recorder:
                 self.recorder.add(ts, price)
                 b1 = self.builder_1s.update(ts, price)
@@ -272,9 +317,13 @@ class Engine:
         ts = b.pop("ts")
         if len(self.bars) and ts <= self.bars.index[-1]:
             return
+        if len(self.bars) and ts.normalize() != self.bars.index[-1].normalize():
+            for d in self.cal.values():
+                for c in d.values():
+                    c.new_session()
         self.bars = pd.concat([self.bars, pd.DataFrame([b], index=pd.DatetimeIndex([ts], name="ts"))])
         i = len(self.bars) - 1
-        tail = self.bars.iloc[-400:]
+        tail = self._tail()
         pf = price_features(tail, self.bs, self.cfg["market"]["weekly_expiry_weekday"]).iloc[[-1]]
         nws = self.news[self.news["ts"] >= tail.index[0]] if len(self.news) else self.news
         nf = news_features(tail, nws, self.bs, self.cfg["news"]["half_life_bars"], self.events).iloc[[-1]]
@@ -454,7 +503,7 @@ class Engine:
             return
         self._last_refresh_wall, self._last_refresh_sim = now, ts
         try:
-            tail = self.bars.iloc[-400:]
+            tail = self._tail()
             if cur["ts"] > tail.index[-1]:
                 row = pd.DataFrame([{k: cur[k] for k in ("open", "high", "low", "close", "ticks")}],
                                    index=pd.DatetimeIndex([cur["ts"]], name="ts"))
@@ -468,6 +517,7 @@ class Engine:
                 P = self._predict(v, X)
                 lq[v] = {h: self.cal[v][h].apply(P[h][0]) for h in self.H}
             self.live_q, self.live_ts, self.live_anchor = lq, tail.index[-1], float(cur["close"])
+            self.live_X = pf
             self._detect(pf.iloc[0], tail)
         except Exception as ex:  # never let a refresh kill the feed
             self.message = f"live refresh error: {ex}"
@@ -599,6 +649,88 @@ class Engine:
                 "in_range": float(np.mean((y >= q[:, 0]) & (y <= q[:, 2]))),
                 "miss_pts": float(miss.mean()), "nochange_miss_pts": float(miss0.mean())}
 
+    # ------------------------------------------------------------------ path risk, plans, alarms
+    def features_at(self, i):
+        """Price-feature row for bar i (history / replay), same window rule as live."""
+        day = self.bars.index[i].normalize()
+        first = int(np.searchsorted(self.bars.index.values, day.to_datetime64()))
+        start = max(0, min(i + 1 - 150, first - 70))
+        return price_features(self.bars.iloc[start:i + 1], self.bs,
+                              self.cfg["market"]["weekly_expiry_weekday"]).iloc[[-1]]
+
+    def minutes_left(self, t):
+        return max(1.0, (self.clock.session(t)[1] - t).total_seconds() / self.bs - 1)
+
+    def plan(self, h, i=None, live=True, anchor_px=None):
+        """Long and short plans for the next h bars: target = typical best move, stop = the adverse move
+        that 80% of the time is NOT exceeded; odds measured on real history in the same volatility."""
+        if self.ex is None:
+            return None
+        if live and self.live_X is not None and self.live_ts is not None:
+            X, t = self.live_X, self.live_ts
+        else:
+            i = len(self.bars) - 1 if i is None else i
+            X, t = self.features_at(i), self.bars.index[i]
+        px = float(anchor_px if anchor_px is not None else self.last_price)
+        h_eff = min(h, self.minutes_left(t))
+        r = self.ex.predict(X, h_eff)
+        to_pts = lambda b: px * b / 1e4
+        out = {"h": h_eff, "anchor": px, "t": t, "sigma_pts": to_pts(r["sigma"]),
+               "rise50": to_pts(r["up50"]), "rise80": to_pts(r["up80"]),
+               "dip50": to_pts(r["dn50"]), "dip80": to_pts(r["dn80"])}
+        for side, tgt, stp in (("long", r["up50"], r["dn80"]), ("short", r["dn50"], r["up80"])):
+            o = self.ex.outcomes(h_eff, tgt, stp, r["sigma"], side)
+            sgn = 1 if side == "long" else -1
+            out[side] = {"target_px": px * np.exp(sgn * tgt / 1e4), "stop_px": px * np.exp(-sgn * stp / 1e4),
+                         "target_pts": to_pts(tgt), "stop_pts": to_pts(stp), **o}
+        return out
+
+    def set_alarm(self, side, plan):
+        p = plan[side]
+        a = {"id": len(self.alarms) + len(self.alarm_events) + 1, "side": side, "entry": plan["anchor"],
+             "target_px": p["target_px"], "stop_px": p["stop_px"], "set_at": self.last_ts,
+             "until": self.last_ts + pd.Timedelta(seconds=self.bs * plan["h"]), "h": plan["h"]}
+        with self.lock:
+            self.alarms.append(a)
+        return a
+
+    def cancel_alarms(self):
+        with self.lock:
+            self.alarms = []
+
+    def _check_alarms(self, ts, price):
+        keep = []
+        for a in self.alarms:
+            up = a["side"] == "long"
+            hit_t = price >= a["target_px"] if up else price <= a["target_px"]
+            hit_s = price <= a["stop_px"] if up else price >= a["stop_px"]
+            kind = "target" if hit_t else "stop" if hit_s else ("expired" if ts >= a["until"] else None)
+            if kind:
+                self.alarm_events.append({**a, "kind": kind, "ts": ts, "price": price,
+                                          "pts": (price - a["entry"]) * (1 if up else -1)})
+            else:
+                keep.append(a)
+        self.alarms = keep
+
+    def next_session(self, force=False):
+        """Next session forecast (refreshed at most every 15 min; US cue fetched when available)."""
+        if self.nextday is None or not len(self.bars):
+            return None
+        now = time.time()
+        if self.next_fc is not None and not force and now - self._next_fc_at < 900:
+            return self.next_fc
+        t_now = pd.Timestamp.now(tz=TZ)
+        st = self.clock.status(t_now)
+        last_close = float(self.last_price if np.isfinite(self.last_price) else self.bars["close"].iloc[-1])
+        last_t = self.clock.session(self.clock.last_session_day(t_now))[1] if not st["open"] else t_now
+        us = self.nextday.us_move_since(last_t) if not st["open"] else None
+        fc = self.nextday.forecast(last_close, us)
+        nxt = self.clock.next_open(t_now + pd.Timedelta(minutes=1)) if st["open"] else st["next_open"]
+        fc.update(next_open=nxt, based_on="today's last price (session still open)" if st["open"]
+                  else "the last close", last_close=last_close)
+        self.next_fc, self._next_fc_at = fc, now
+        return fc
+
     # ------------------------------------------------------------------ read API for UI
     def snapshot(self):
         with self.lock:
@@ -613,6 +745,7 @@ class Engine:
                 "live_q": {v: dict(d) for v, d in self.live_q.items()}, "live_ts": self.live_ts,
                 "alerts": list(self.alerts), "refit_info": self.refit_info, "refitting": self._refitting,
                 "armed": self.armed, "source": self.live_source, "message": self.message,
+                "alarms": list(self.alarms), "alarm_events": list(self.alarm_events),
                 "using": getattr(self.feed, "using", None) if self.feed else None,
                 "lag": getattr(self.feed, "lag_seconds", 0.0) if self.feed else 0.0,
                 "feed_error": getattr(self.feed, "last_error", None) if self.feed else None,

@@ -37,10 +37,14 @@ class OnlineCalibrator:
     def update(self, raw: np.ndarray, corr: np.ndarray, y: float):
         covered = corr[0] <= y <= corr[2]
         self.scale *= math.exp(self.gamma * ((0 if covered else 1) - (1 - self.target)))
-        self.scale = float(min(max(self.scale, 0.3), 5.0))
+        self.scale = float(min(max(self.scale, 0.5), 2.5))
         self.bias = (1 - self.alpha) * self.bias + self.alpha * (y - raw[1])
         self.hist.append((abs(y - raw[1]), abs(y - corr[1]), float(np.sign(corr[1]) == np.sign(y)),
                           float(covered), abs(y)))
+
+    def new_session(self):
+        """Halfway back to neutral at each open: yesterday's regime shouldn't fully carry over."""
+        self.scale = 1.0 + (self.scale - 1.0) * 0.5
 
     def stats(self) -> dict:
         if not self.hist:

@@ -11,6 +11,13 @@ Options:
 """
 import argparse, os, sys, webbrowser, threading
 from pathlib import Path
+
+if sys.platform.startswith("linux"):  # fewer malloc arenas = much less memory on a 512 MB server
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").mallopt(-8, 2)  # M_ARENA_MAX
+    except Exception:
+        pass
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from niftysim.config import load_config, models_dir, horizons
@@ -42,8 +49,15 @@ mp = models_dir(cfg) / res / f"{a.model}_price.joblib"
 
 def _models_ok():
     try:
-        return all(list(ForecastModel.load(models_dir(cfg) / res / f"{a.model}_{v}.joblib").horizons) == horizons(cfg, res)
-                   for v in ("price", "news"))
+        from niftysim.models import CODE_VERSION
+        for v in ("price", "news"):
+            m = ForecastModel.load(models_dir(cfg) / res / f"{a.model}_{v}.joblib")
+            if list(m.horizons) != horizons(cfg, res):
+                return False
+            if getattr(m, "code_version", 1) != CODE_VERSION:
+                print(f"saved '{a.model}' models are from older code, retraining")
+                return False
+        return True
     except Exception as ex:
         print(f"saved '{a.model}' models can't be used here ({type(ex).__name__}: {ex})")
         return False

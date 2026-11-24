@@ -40,13 +40,23 @@ class BlindSession:
 
     def start(self, day, model="ridge", speed=60.0):
         self.stop()
+        if self.engine is not None:        # free the previous replay before building a new one
+            self.engine.stop()
+            self.engine = None
+            import gc
+            gc.collect()
         self.day = pd.Timestamp(day).tz_localize(TZ) if pd.Timestamp(day).tzinfo is None else pd.Timestamp(day)
         o, c = MarketClock(self.cfg).session(self.day)
         self.state, self.msg = "training", f"Training {model} only on data before {self.day:%a %d %b}…"
 
         def job():
             try:
-                train_all(self.cfg, "1min", [model], do_cv=False, log=lambda *_: None, until=o, subdir="blind")
+                import gc, os
+                # 90 days keeps a blind replay inside the free server's 512 MB
+                lim = os.environ.get("NIFTYSIM_BLIND_TRAIN_DAYS") or ("90" if os.environ.get("RENDER") else None)
+                train_all(self.cfg, "1min", [model], do_cv=False, log=lambda *_: None, until=o, subdir="blind",
+                          last_days=int(lim) if lim else None)
+                gc.collect()
                 eng = Engine(self.cfg, "1min", model, history_days=10, history_until=o, models_subdir="blind")
                 d = data_dir(self.cfg)
                 bars = load_bars(d / "bars_1min.parquet")

@@ -178,3 +178,85 @@ table.t th:first-child, table.t td:first-child { text-align: left; }
 .alert.up { box-shadow: inset 4px 0 0 var(--up); }
 .alert.down { box-shadow: inset 4px 0 0 var(--down); }
 .alert.either { box-shadow: inset 4px 0 0 var(--warn); }
+
+/* ===================== v3 layout ===================== */
+.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+.mt { margin-top: 14px; } .mb { margin-bottom: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.controls-card { background: var(--panel); border-radius: var(--r-lg); padding: 14px 16px 6px; margin-bottom: 12px; }
+.row2 { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 8px; }
+.row2 > div { min-width: 240px; }
+.chips.small label { padding: 5px 10px; font-size: 12.5px; }
+.chartwrap { height: min(64vh, 620px); overflow: hidden; }
+.chartbox { height: 100%; }
+.tickbox { height: 190px; }
+.scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.newsbox { max-height: 420px; overflow-y: auto; }
+.hero-next { width: min(640px, 100%); margin-top: 26px; text-align: left; }
+
+/* selected horizon */
+.summary .when { color: var(--ink-2); font-weight: 700; margin-bottom: 10px; }
+.cases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.case { background: var(--raised); border-radius: var(--r-md); padding: 10px 12px; }
+.case.mid { box-shadow: inset 0 0 0 1px var(--line); }
+.case .k { color: var(--muted); font-size: 12px; }
+.case .v { font: 700 22px "Sora", sans-serif; letter-spacing: -.5px; }
+.case .v.sm { font-size: 16px; }
+.case .d { font-weight: 700; font-size: 13px; }
+.oddsbar { height: 8px; border-radius: 4px; background: var(--up); overflow: hidden; margin-top: 12px; }
+.oddsbar span { display: block; height: 100%; background: var(--down); }
+.oddslab { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 700; margin-top: 5px; }
+
+/* ladder */
+table.ladder td:nth-child(3) { font-weight: 800; color: var(--ink); }
+table.ladder tr.next td { border-top: 1px dashed var(--line); }
+
+/* plan */
+.swing { color: var(--ink-2); margin-bottom: 12px; }
+.plan { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plan-side { background: var(--raised); border-radius: var(--r-md); padding: 12px 14px; }
+.side-name { font-weight: 800; margin-bottom: 8px; }
+.lvl { display: flex; gap: 8px; align-items: baseline; margin: 3px 0; font-variant-numeric: tabular-nums; }
+.lvl .k { color: var(--muted); width: 52px; }
+.lvl b { font: 700 18px "Sora", sans-serif; }
+.tribar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 10px 0 6px; background: var(--line); }
+.tribar span.g { background: var(--up); } .tribar span.n { background: #5b5670; } .tribar span.r { background: var(--down); }
+.plan-side .btn { margin-top: 10px; width: 100%; }
+.alarms { margin-top: 10px; }
+
+/* ===================== phones ===================== */
+@media (max-width: 760px) {
+  .app { padding: 10px 10px 40px; }
+  .bar { gap: 10px; margin-bottom: 10px; }
+  .status { margin-left: 0; width: 100%; font-size: 12.5px; }
+  .nav label { padding: 6px 12px; }
+  .grid2, .plan { grid-template-columns: 1fr; }
+  .price { font-size: 30px; }
+  .pricehead { gap: 8px 12px; margin-bottom: 10px; }
+  .pricehead .meta { width: 100%; font-size: 12px; }
+  .panel { padding: 12px; border-radius: 16px; }
+  .panel.chart { padding: 4px 2px 2px; }
+  .chartwrap { height: 56vh; min-height: 330px; }
+  .controls-card { padding: 10px 12px 4px; }
+  .row2 > div { min-width: 0; width: 100%; }
+  .chips label { padding: 6px 10px; font-size: 13px; }
+  .cases { grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  .case { padding: 8px; } .case .v { font-size: 17px; } .case .v.sm { font-size: 13px; }
+  table.t { font-size: 12.5px; } table.t th, table.t td { padding: 5px 6px; white-space: nowrap; }
+  .orb-wrap { width: 240px; height: 240px; } .orb-wrap img { width: 240px !important; height: 240px !important; }
+  .orb { inset: 20px; } .orb .big { font-size: 28px; } .orb.armed .big { font-size: 32px; }
+  .hero h1 { font-size: 22px; }
+  .news-item { grid-template-columns: 42px 1fr; } .news-item > div:last-child { display: none; }
+}
+
+/* Phones: price, then the chart, then the controls; everything else after. */
+@media (max-width: 760px) {
+  div:has(> .mb-controls) { display: flex; flex-direction: column; }
+  div:has(> .mb-controls) > * { order: 5; }
+  div:has(> .mb-controls) > .pricehead { order: 0; }
+  div:has(> .mb-controls) > .mb-alert { order: 1; }
+  div:has(> .mb-controls) > .chartwrap { order: 2; margin-bottom: 12px; }
+  div:has(> .mb-controls) > .mb-controls { order: 3; }
+  .mb-alert .alert { font-size: 13px; padding: 10px 12px; }
+  .mb-alert .alert div:first-child { font-size: 14px !important; }
+}
